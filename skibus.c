@@ -10,17 +10,23 @@
 int convert_to_int(char *str);
 void check_int_range(int value, char* name, int min, int max);
 sem_t *create_semaphore(int value);
+void release_semaphore(sem_t *sem);
 int *create_shared_variable(int value);
+void release_shared_variable(int *var);
 void set_shared_memory(char **argv);
+void release_shared_memory();
 void print_process(const char *format, ...);
 
 FILE *file;
 int *lineCount;
 int *riders;
+int *stopsCount;
 sem_t *mutex;
 sem_t *multiplex;
 sem_t *bus;
 sem_t *allAboard;
+int busWaitTime;
+int riderWaitTime;
 
 
 int main(int argc, char *argv[]) {
@@ -53,6 +59,8 @@ int main(int argc, char *argv[]) {
   }
 
   while(wait(NULL) > 0);
+
+  release_shared_memory();
 
   exit(EXIT_SUCCESS);
 }
@@ -91,6 +99,18 @@ sem_t *create_semaphore(int value) {
   return sem;
 }
 
+void release_semaphore(sem_t *sem) {
+  if (sem_destroy(sem) == -1) {
+    fprintf(stderr, "Cannot destroy semaphore\n");
+    exit(EXIT_FAILURE);
+  }
+
+  if (munmap(sem, sizeof(sem_t)) == -1) {
+    fprintf(stderr, "Cannot unmap semaphore\n");
+    exit(EXIT_FAILURE);
+  }
+}
+
 int *create_shared_variable(int value) {
   int *var = mmap(NULL, sizeof(int), PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
 
@@ -103,28 +123,49 @@ int *create_shared_variable(int value) {
   return var;
 }
 
+void release_shared_variable(int *var) {
+  if (munmap(var, sizeof(int)) == -1) {
+    fprintf(stderr, "Cannot unmap shared variable\n");
+    exit(EXIT_FAILURE);
+  }
+}
+
 void set_shared_memory(char **argv) {
   int L = convert_to_int(argv[1]);
   check_int_range(L, "L", 0, 19999);
+  riders = create_shared_variable(0);
 
   int Z = convert_to_int(argv[2]);
   check_int_range(Z, "Z",1, 10);
+  stopCount = create_shared_variable(Z);
 
   int K = convert_to_int(argv[3]);
   check_int_range(K, "K",10, 100);
+  multiplex = create_semaphore(K);
 
   int TL = convert_to_int(argv[4]);
   check_int_range(TL, "TL", 0, 10000);
+  riderWaitTime = TL;
 
   int TB = convert_to_int(argv[5]);
   check_int_range(TB, "TB", 0, 1000);
+  busWaitTime = TB;
 
   lineCount = create_shared_variable(1);
-  riders = create_shared_variable(0);
   mutex = create_semaphore(1);
-  multiplex = create_semaphore(Z);
-  bus = create_semaphore( 1);
+  bus = create_semaphore(1);
   allAboard = create_semaphore(0);
+}
+
+void release_shared_memory() {
+  release_shared_variable(riders);
+  release_shared_variable(stopsCount);
+  release_shared_variable(lineCount);
+
+  release_semaphore(mutex);
+  release_semaphore(multiplex);
+  release_semaphore(bus);
+  release_semaphore(allAboard);
 }
 
 void print_process(const char *format, ...) {
