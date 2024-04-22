@@ -1,9 +1,10 @@
 #include <stdio.h>
 #include <stdarg.h>
-#include <sys/mman.h>
-#include <unistd.h>
 #include <stdlib.h>
 #include <semaphore.h>
+#include <time.h>
+#include <unistd.h>
+#include <sys/mman.h>
 #include <sys/wait.h>
 #include <sys/types.h>
 
@@ -13,49 +14,88 @@ sem_t *create_semaphore(int value);
 void release_semaphore(sem_t *sem);
 int *create_shared_variable(int value);
 void release_shared_variable(int *var);
-void set_shared_memory(char **argv);
+void set_shared_memory(int L, int Z, int K);
 void release_shared_memory();
 void print_process(const char *format, ...);
+void process_sleep(int max);
 
 FILE *file;
 int *lineCount;
-int *riders;
-int *stopsCount;
+int *ridersOnStop;
+int *ridersLeft;
+int *currentStop;
 sem_t *mutex;
 sem_t *multiplex;
 sem_t *bus;
 sem_t *allAboard;
-int busWaitTime;
-int riderWaitTime;
-
 
 int main(int argc, char *argv[]) {
+  srand(time(NULL));
+
   if(argc != 6) {
     printf("Usage: %s L Z K TL TB\n", argv[0]);
     exit(EXIT_FAILURE);
   }
+
+  int L = convert_to_int(argv[1]);
+  check_int_range(L, "L", 0, 19999);
+
+  int Z = convert_to_int(argv[2]);
+  check_int_range(Z, "Z",1, 10);
+
+  int K = convert_to_int(argv[3]);
+  check_int_range(K, "K",10, 100);
+
+  int TL = convert_to_int(argv[4]);
+  check_int_range(TL, "TL", 0, 10000);
+
+  int TB = convert_to_int(argv[5]);
+  check_int_range(TB, "TB", 0, 1000);
+
+  set_shared_memory(L, Z, K);
 
   if((file = fopen("proj2.out", "w")) == NULL) {
     fprintf(stderr, "Cannot open file\n");
     exit(EXIT_FAILURE);
   }
 
-  set_shared_memory(argv);
-  printf("%d\n", *riders);
-
   pid_t pid = fork();
-  if (pid == 0) { // Child process
-      sem_wait(mutex);
-      if (*riders > 0) {
-          sem_post(bus); // and pass the mutex
-          printf("Bus arrived\n");
-          sem_wait(allAboard); // and get the mutex back
+  if (pid == 0) {
+    print_process("BUS: started\n");
+    process_sleep(TB);
+    for(int i = 1; i <= Z+1; i++) {
+      if(i == Z+1) {
+        print_process("BUS: arrived to final\n");
+        if(*ridersLeft > 0) {
+          i = 0;
+          print_process("BUS: leaving final\n");
+          process_sleep(TB);
+        }
+
+        if (*ridersLeft == 0) {
+          print_process("BUS: leaving final\n");
+          print_process("BUS: finish\n");
+        }
+        continue;
       }
+
+      sem_wait(mutex);
+      print_process("BUS: arrived to %d\n", i);
+
+      if (*ridersOnStop > 0) {
+        sem_post(bus);
+        sem_wait(allAboard);
+      }
+
+      print_process("BUS: leaving %d\n", i);
       sem_post(mutex);
-      exit(EXIT_SUCCESS);
+      process_sleep(TB);
+    }
+    exit(EXIT_SUCCESS);
   } else if (pid < 0) {
-      fprintf(stderr, "Fork failed\n");
-      exit(EXIT_FAILURE);
+    fprintf(stderr, "Fork failed\n");
+    release_shared_memory();
+    exit(EXIT_FAILURE);
   }
 
   while(wait(NULL) > 0);
@@ -130,42 +170,30 @@ void release_shared_variable(int *var) {
   }
 }
 
-void set_shared_memory(char **argv) {
-  int L = convert_to_int(argv[1]);
-  check_int_range(L, "L", 0, 19999);
-  riders = create_shared_variable(0);
-
-  int Z = convert_to_int(argv[2]);
-  check_int_range(Z, "Z",1, 10);
-  stopCount = create_shared_variable(Z);
-
-  int K = convert_to_int(argv[3]);
-  check_int_range(K, "K",10, 100);
-  multiplex = create_semaphore(K);
-
-  int TL = convert_to_int(argv[4]);
-  check_int_range(TL, "TL", 0, 10000);
-  riderWaitTime = TL;
-
-  int TB = convert_to_int(argv[5]);
-  check_int_range(TB, "TB", 0, 1000);
-  busWaitTime = TB;
-
+void set_shared_memory(int L, int Z, int K) {
+  currentStop = create_shared_variable(Z);
+  ridersOnStop = create_shared_variable(0);
   lineCount = create_shared_variable(1);
+  ridersLeft = create_shared_variable(L);
+
+  multiplex = create_semaphore(K);
   mutex = create_semaphore(1);
   bus = create_semaphore(1);
   allAboard = create_semaphore(0);
 }
 
 void release_shared_memory() {
-  release_shared_variable(riders);
-  release_shared_variable(stopsCount);
+  release_shared_variable(ridersOnStop);
+  release_shared_variable(currentStop);
   release_shared_variable(lineCount);
+  release_shared_variable(ridersLeft);
 
   release_semaphore(mutex);
   release_semaphore(multiplex);
   release_semaphore(bus);
   release_semaphore(allAboard);
+
+  fclose(file);
 }
 
 void print_process(const char *format, ...) {
@@ -175,4 +203,9 @@ void print_process(const char *format, ...) {
   vfprintf(file, format, args);
   fflush(file);
   va_end(args);
+}
+
+void process_sleep(int max) {
+  int time = rand() % max + 1;
+  usleep(time);
 }
