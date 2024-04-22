@@ -17,6 +17,8 @@ void release_shared_memory(int Z);
 void print_process(const char *format, ...);
 void process_sleep(int max);
 int generate_random_stop(int Z);
+void bus(int Z, int TB);
+void rider(int idL, int TL, int Z, int K);
 
 FILE *file; 
 int *lineCount; 
@@ -58,41 +60,7 @@ int main(int argc, char *argv[]) {
 
   pid_t pid = fork();
   if (pid == 0) {
-    print_process("BUS: started\n");
-    process_sleep(TB);
-    for(int i = 1; i <= Z+1; i++) {
-      if(i == Z+1) {
-        print_process("BUS: arrived to final\n");
-        sem_post(&busStops[i - 1]);
-        sem_wait(allAboard);
-        if(*ridersLeft > 0) {
-          i = 0;
-          print_process("BUS: leaving final\n");
-          process_sleep(TB);
-        }
-
-        if (*ridersLeft == 0) {
-          print_process("BUS: leaving final\n");
-          print_process("BUS: finish\n");
-        }
-        continue;
-      }
-
-      sem_wait(mutex);
-      print_process("BUS: arrived to %d\n", i);
-
-      if (ridersOnStop[i - 1] > 0 && *busCapacity > 0) {
-        sem_post(&busStops[i - 1]);
-        sem_wait(allAboard);
-      }
-
-      print_process("BUS: leaving %d\n", i);
-      sem_post(mutex);
-      process_sleep(TB);
-    }
-
-    fclose(file);
-    exit(EXIT_SUCCESS);
+    bus(Z, TB);
   } else if (pid < 0) {
     fprintf(stderr, "Fork failed\n");
     release_shared_memory(Z);
@@ -104,41 +72,7 @@ int main(int argc, char *argv[]) {
     pid = fork();
 
     if (pid == 0) {
-      print_process("L %d: started\n", i);
-      process_sleep(TL);
-
-      int riderStop = generate_random_stop(Z);
-      print_process("L %d: arrived to %d\n", i, riderStop);
-
-      sem_wait(mutex);
-      ridersOnStop[riderStop - 1]++;
-      sem_post(mutex);
-
-      sem_wait(&busStops[riderStop - 1]);
-
-      print_process("L %d: boarding\n", i);
-
-      ridersOnStop[riderStop - 1]--;
-      (*ridersLeft)--;
-      (*busCapacity)--;
-
-      if (*busCapacity == 0 || ridersOnStop[riderStop - 1] == 0) {
-        sem_post(allAboard);
-      } else {
-        sem_post(&busStops[riderStop - 1]);
-      }
-
-      sem_wait(&busStops[Z]);
-      print_process("L %d: going to ski\n", i);
-      (*busCapacity)++;
-      if(*busCapacity == K) {
-        sem_post(allAboard);
-      } else {
-        sem_post(&busStops[Z]);
-      }
-
-      fclose(file);
-      exit(EXIT_SUCCESS);
+      rider(i, TL, Z, K);
     } else if (pid < 0) {
       fprintf(stderr, "Fork failed\n");
       release_shared_memory(Z);
@@ -217,4 +151,80 @@ void process_sleep(int max) {
 int generate_random_stop(int Z) {
   srand(time(NULL) ^ getpid());
   return rand() % Z + 1;
+}
+
+void bus(int Z, int TB) {
+  print_process("BUS: started\n");
+  process_sleep(TB);
+  for(int i = 1; i <= Z+1; i++) {
+    if(i == Z+1) {
+      print_process("BUS: arrived to final\n");
+      sem_post(&busStops[i - 1]);
+      sem_wait(allAboard);
+      if(*ridersLeft > 0) {
+        i = 0;
+        print_process("BUS: leaving final\n");
+        process_sleep(TB);
+      }
+
+      if (*ridersLeft == 0) {
+        print_process("BUS: leaving final\n");
+        print_process("BUS: finish\n");
+      }
+      continue;
+    }
+
+    sem_wait(mutex);
+    print_process("BUS: arrived to %d\n", i);
+
+    if (ridersOnStop[i - 1] > 0 && *busCapacity > 0) {
+      sem_post(&busStops[i - 1]);
+      sem_wait(allAboard);
+    }
+
+    print_process("BUS: leaving %d\n", i);
+    sem_post(mutex);
+    process_sleep(TB);
+  }
+
+  fclose(file);
+  exit(EXIT_SUCCESS);
+}
+
+void rider(int idL, int TL, int Z, int K) {
+  print_process("L %d: started\n", idL);
+  process_sleep(TL);
+
+  int riderStop = generate_random_stop(Z);
+  print_process("L %d: arrived to %d\n", idL, riderStop);
+
+  sem_wait(mutex);
+  ridersOnStop[riderStop - 1]++;
+  sem_post(mutex);
+
+  sem_wait(&busStops[riderStop - 1]);
+
+  print_process("L %d: boarding\n", idL);
+
+  ridersOnStop[riderStop - 1]--;
+  (*ridersLeft)--;
+  (*busCapacity)--;
+
+  if (*busCapacity == 0 || ridersOnStop[riderStop - 1] == 0) {
+    sem_post(allAboard);
+  } else {
+    sem_post(&busStops[riderStop - 1]);
+  }
+
+  sem_wait(&busStops[Z]);
+  print_process("L %d: going to ski\n", idL);
+  (*busCapacity)++;
+  if(*busCapacity == K) {
+    sem_post(allAboard);
+  } else {
+    sem_post(&busStops[Z]);
+  }
+
+  fclose(file);
+  exit(EXIT_SUCCESS);
 }
