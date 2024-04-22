@@ -8,30 +8,27 @@
 #include <sys/wait.h>
 #include <sys/types.h>
 
+#include "shared_memory.h"
+
 int convert_to_int(char *str);
 void check_int_range(int value, char* name, int min, int max);
-sem_t *create_semaphore(int value);
-void release_semaphore(sem_t *sem);
-int *create_shared_variable(int value);
-void release_shared_variable(int *var);
 void set_shared_memory(int L, int Z, int K);
-void release_shared_memory();
+void release_shared_memory(int Z);
 void print_process(const char *format, ...);
 void process_sleep(int max);
+int generate_random_stop(int Z);
 
-FILE *file;
-int *lineCount;
+FILE *file; 
+int *lineCount; 
 int *ridersOnStop;
-int *ridersLeft;
-int *currentStop;
+int *ridersLeft; 
+int *busCapacity;
 sem_t *mutex;
-sem_t *multiplex;
-sem_t *bus;
-sem_t *allAboard;
+sem_t *busStops; 
+sem_t *allAboard; 
+sem_t *output;
 
 int main(int argc, char *argv[]) {
-  srand(time(NULL));
-
   if(argc != 6) {
     printf("Usage: %s L Z K TL TB\n", argv[0]);
     exit(EXIT_FAILURE);
@@ -66,6 +63,8 @@ int main(int argc, char *argv[]) {
     for(int i = 1; i <= Z+1; i++) {
       if(i == Z+1) {
         print_process("BUS: arrived to final\n");
+        sem_post(&busStops[i - 1]);
+        sem_wait(allAboard);
         if(*ridersLeft > 0) {
           i = 0;
           print_process("BUS: leaving final\n");
@@ -82,8 +81,8 @@ int main(int argc, char *argv[]) {
       sem_wait(mutex);
       print_process("BUS: arrived to %d\n", i);
 
-      if (*ridersOnStop > 0) {
-        sem_post(bus);
+      if (ridersOnStop[i - 1] > 0 && *busCapacity > 0) {
+        sem_post(&busStops[i - 1]);
         sem_wait(allAboard);
       }
 
@@ -91,16 +90,67 @@ int main(int argc, char *argv[]) {
       sem_post(mutex);
       process_sleep(TB);
     }
+
+    fclose(file);
     exit(EXIT_SUCCESS);
   } else if (pid < 0) {
     fprintf(stderr, "Fork failed\n");
-    release_shared_memory();
+    release_shared_memory(Z);
+    fclose(file);
     exit(EXIT_FAILURE);
+  }
+
+  for(int i = 1; i <= L; i++) {
+    pid = fork();
+
+    if (pid == 0) {
+      print_process("L %d: started\n", i);
+      process_sleep(TL);
+
+      int riderStop = generate_random_stop(Z);
+      print_process("L %d: arrived to %d\n", i, riderStop);
+
+      sem_wait(mutex);
+      ridersOnStop[riderStop - 1]++;
+      sem_post(mutex);
+
+      sem_wait(&busStops[riderStop - 1]);
+
+      print_process("L %d: boarding\n", i);
+
+      ridersOnStop[riderStop - 1]--;
+      (*ridersLeft)--;
+      (*busCapacity)--;
+
+      if (*busCapacity == 0 || ridersOnStop[riderStop - 1] == 0) {
+        sem_post(allAboard);
+      } else {
+        sem_post(&busStops[riderStop - 1]);
+      }
+
+      sem_wait(&busStops[Z]);
+      print_process("L %d: going to ski\n", i);
+      (*busCapacity)++;
+      if(*busCapacity == K) {
+        sem_post(allAboard);
+      } else {
+        sem_post(&busStops[Z]);
+      }
+
+      fclose(file);
+      exit(EXIT_SUCCESS);
+    } else if (pid < 0) {
+      fprintf(stderr, "Fork failed\n");
+      release_shared_memory(Z);
+      fclose(file);
+      exit(EXIT_FAILURE);
+    }
   }
 
   while(wait(NULL) > 0);
 
-  release_shared_memory();
+  release_shared_memory(Z);
+  fclose(file);
 
   exit(EXIT_SUCCESS);
 }
@@ -123,89 +173,48 @@ void check_int_range(int value, char* name, int min, int max) {
   }
 }
 
-sem_t *create_semaphore(int value) {
-  sem_t *sem = mmap(NULL, sizeof(sem_t), PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+void set_shared_memory(int L,int Z, int K) {
+  lineCount = create_shared_int(1);
+  ridersLeft = create_shared_int(L);
+  busCapacity = create_shared_int(K);
+  ridersOnStop = create_shared_int_array(Z, 0);
 
-  if(sem == MAP_FAILED) {
-    fprintf(stderr, "Cannot create semaphore\n");
-    exit(EXIT_FAILURE);
-  }
-
-  if(sem_init(sem, 1, value) == -1) {
-    fprintf(stderr, "Cannot initialize semaphore\n");
-    exit(EXIT_FAILURE);
-  }
-
-  return sem;
-}
-
-void release_semaphore(sem_t *sem) {
-  if (sem_destroy(sem) == -1) {
-    fprintf(stderr, "Cannot destroy semaphore\n");
-    exit(EXIT_FAILURE);
-  }
-
-  if (munmap(sem, sizeof(sem_t)) == -1) {
-    fprintf(stderr, "Cannot unmap semaphore\n");
-    exit(EXIT_FAILURE);
-  }
-}
-
-int *create_shared_variable(int value) {
-  int *var = mmap(NULL, sizeof(int), PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
-
-  if(var == MAP_FAILED) {
-    fprintf(stderr, "Cannot create shared variable\n");
-    exit(EXIT_FAILURE);
-  }
-
-  *var = value;
-  return var;
-}
-
-void release_shared_variable(int *var) {
-  if (munmap(var, sizeof(int)) == -1) {
-    fprintf(stderr, "Cannot unmap shared variable\n");
-    exit(EXIT_FAILURE);
-  }
-}
-
-void set_shared_memory(int L, int Z, int K) {
-  currentStop = create_shared_variable(Z);
-  ridersOnStop = create_shared_variable(0);
-  lineCount = create_shared_variable(1);
-  ridersLeft = create_shared_variable(L);
-
-  multiplex = create_semaphore(K);
   mutex = create_semaphore(1);
-  bus = create_semaphore(1);
   allAboard = create_semaphore(0);
+  output = create_semaphore(1);
+  busStops = create_semaphore_array(Z + 1, 0);
 }
 
-void release_shared_memory() {
-  release_shared_variable(ridersOnStop);
-  release_shared_variable(currentStop);
-  release_shared_variable(lineCount);
-  release_shared_variable(ridersLeft);
+void release_shared_memory(int Z) {
+  release_shared_int(lineCount);
+  release_shared_int(ridersLeft);
+  release_shared_int(busCapacity);
+  release_shared_int_array(ridersOnStop, Z);
 
   release_semaphore(mutex);
-  release_semaphore(multiplex);
-  release_semaphore(bus);
   release_semaphore(allAboard);
-
-  fclose(file);
+  release_semaphore(output);
+  release_semaphore_array(busStops, Z + 1);
 }
 
 void print_process(const char *format, ...) {
+  sem_wait(output);
   va_list args;
   va_start(args, format);
   fprintf(file, "%d: ", (*lineCount)++);
   vfprintf(file, format, args);
   fflush(file);
   va_end(args);
+  sem_post(output);
 }
 
 void process_sleep(int max) {
-  int time = rand() % max + 1;
+  srand(time(NULL) ^ getpid());
+  int time = rand() % (max + 1);
   usleep(time);
+}
+
+int generate_random_stop(int Z) {
+  srand(time(NULL) ^ getpid());
+  return rand() % Z + 1;
 }
