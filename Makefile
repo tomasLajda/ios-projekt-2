@@ -19,3 +19,6 @@ test: kontrola-vystupu.sh
 
 clean:
 	rm -f $(OBJS) $(TARGET)
+
+zip:
+	zip proj2.zip *.c *.h Makefile
